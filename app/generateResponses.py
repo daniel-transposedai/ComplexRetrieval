@@ -36,46 +36,50 @@ def get_vectorstore(index_name):
     vectorstore = PineconeVectorStore(index_name=index_name, embedding=query_embedding, namespace="MasterclassRetrieval")
 
     return vectorstore
+def concatenate_content(conv_prefix):
+    return "\n".join([entry['content'] for entry in conv_prefix])
 
 def retrieve_inputs(file_path):
     # Read the paraquet dataset
     input_dataset = pd.read_parquet(file_path)
-    return input_dataset
+
+    # Extract and concatenate 'content' strings to a single input
+    concatenated_content_list = [concatenate_content(row['conv_prefix']) for index, row in input_dataset.iterrows()]
+
+    return concatenated_content_list
 
 
 ## Executor methods
-
-def create_response_dataframe(index_name, input_dataset):
+def create_response_dataframe(index_name, input_list):
     """
-    Create a RAG chain for the given index and vectorstore.
+    Create a RAG chain for the given index and vectorstore and perform a Pinecone similarity search
     """
-
     # Fetch vectorstore
     vectorstore = get_vectorstore(index_name)
 
     # Create the retriever (with Precision K=3 as requested)
     answers = []
 
-    questions = input_dataset['input'].tolist()
-    for q in questions:
+    for q in input_list:
         q_response = vectorstore.similarity_search(q, k=3)
         answers.append(q_response)
 
-    output_dataframe = pd.DataFrame({'input': questions, 'output': answers})
+
+    output_dataframe = pd.DataFrame({'input': input_list, 'output': answers})
     print(output_dataframe.head())
 
     return output_dataframe
 
-def generate_response_pipeline(file_path, index_name):
+def generate_response_pipeline(index_name):
     """
     Generate responses for the given input dataset.
     """
 
     # Retrieve input dataset
-    input_dataset = retrieve_inputs(f'util/{index_name}_input_dataset.parquet')
+    input_list = retrieve_inputs(f'util/{index_name}_input_dataset.parquet')
 
     # Create response dataframe
-    response_dataframe = create_response_dataframe(index_name, input_dataset)
+    response_dataframe = create_response_dataframe(index_name, input_list)
 
     response_dataframe.to_csv(f'util/{index_name}_rag-test-conversations.csv', index=False)
 

@@ -1,0 +1,27 @@
+node_lines:
+- node_line_name: retrieve_node_line  # Arbitrary node line name
+  nodes:
+    - node_type: retrieval
+      strategy:
+        metrics: [retrieval_f1, retrieval_recall, retrieval_precision]
+        speed_threshold: 10
+      top_k: 10
+      modules:
+        - module_type: bm25
+        - module_type: vectordb
+          embedding_model: openai
+        - module_type: hybrid_dbsf
+          target_modules: ('bm25', 'vectordb')
+          weights:
+            - (0.3, 0.7)
+- node_line_name: post_retrieve_node_line  # Arbitrary node line name
+  nodes:
+    - node_type: passage_reranker
+      strategy:
+        metrics: [ retrieval_f1, retrieval_recall, retrieval_precision ]
+        speed_threshold: 10
+        top_k: 5
+      modules:
+        - module_type: flag_embedding_llm_reranker
+          batch: 32
+          model_name: BAAI/bge-reranker-v2-gemma

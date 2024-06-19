@@ -17,4 +17,4 @@ streamlit
 ragas
 jupyter
 pyarrow
-
+autorag

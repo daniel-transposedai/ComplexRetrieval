@@ -20,8 +20,6 @@ import multiprocessing
 
 load_dotenv(find_dotenv())
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 nltk.download('stopwords')
 nltk.download('punkt')
@@ -53,6 +51,7 @@ def ingest_dataset(file_path):
         'title': titles,
         'kind': kinds
     }
+    print("This ingestion is complete")
     return data_dict
 
 # Function to read and preprocess dataset csv from a file
@@ -71,7 +70,7 @@ def applyHDPTopicModelSegmentation(texts, original_sentences):
     corpus = [dictionary.doc2bow(text) for text in texts]
 
     # Apply HDP and get dominant topics
-    topic_boundaries = getDominantTopic(corpus, dictionary)
+    topic_boundaries = getDominantTopic_delimited(corpus, dictionary)
 
     # Segment the text based on topic boundaries
     segmented_texts = []
@@ -82,10 +81,6 @@ def applyHDPTopicModelSegmentation(texts, original_sentences):
 
     if start < len(original_sentences):
         segmented_texts.append(' '.join(original_sentences[start:]))
-
-    # Example of segments
-    for segment in segmented_texts:
-        print(segment)
 
     # Remove any empty string stragglers
     segmented_texts = [text for text in segmented_texts if text.strip()]
@@ -102,12 +97,33 @@ def getDominantTopic(corpus, dictionary):
     current_topic = None
     for i, bow in enumerate(corpus):
         topic_probabilities = hdp[bow]
-        logger.log(logging.INFO, "Retrieved topic probabilities " + str(topic_probabilities))
+
         dominant_topic = max(topic_probabilities, key=lambda x: x[1])[0] if topic_probabilities else None
         if current_topic != dominant_topic:
             topic_boundaries.add(i)
             current_topic = dominant_topic
-    logger.log(logging.INFO, "Completed HDP with topic boundaries " + str(topic_boundaries))
+
+    return topic_boundaries
+
+def getDominantTopic_delimited(corpus, dictionary, min_segment_size=3):
+
+    # Applying the HDP model
+    hdp = models.HdpModel(corpus, id2word=dictionary)
+
+    # Topic Modelling for segmentation creates guide to split based on topic changes and retains context
+    topic_boundaries = set()
+    current_topic = None
+    segment_size = 0
+    for i, bow in enumerate(corpus):
+        topic_probabilities = hdp[bow]
+
+        dominant_topic = max(topic_probabilities, key=lambda x: x[1])[0] if topic_probabilities else None
+        if current_topic != dominant_topic and segment_size >= min_segment_size:
+            topic_boundaries.add(i)
+            current_topic = dominant_topic
+            segment_size = 0
+        else:
+            segment_size += 1
 
     return topic_boundaries
 
@@ -146,7 +162,7 @@ def upsertToVectorDB(documents, index_name):
 
 
 
-    logger.log(logging.INFO, "Embedding and indexing documents")
+    print("Embedding and indexing documents")
     docsearch = PineconeVectorStore.from_documents(
         documents=documents,
         index_name=index_name,
@@ -158,7 +174,7 @@ def upsertToVectorDB(documents, index_name):
 
 
 # function to iterate over the dataset, apply topic modelling, and create documents
-def process_dataset_with_HDP(data_dict, index_name):
+def process_dataset_with_HDP_serial(data_dict, index_name):
 
     #all_segments = [] Only do this if we want to embed across all entries
 
@@ -170,14 +186,14 @@ def process_dataset_with_HDP(data_dict, index_name):
         kind = data_dict['kind'][i]
         title = data_dict['title'][i]
         content_docs = []
-        logger.log(logging.INFO, "Preprocessing content texts with HDP")
+        print("Preprocessing content texts with HDP")
 
         # preprocess the text of the content entry
         texts, original_sentences = preprocessText(content)
         # run HDP and topic segment the content text
         segmented_texts = applyHDPTopicModelSegmentation(texts, original_sentences)
 
-        logger.log(logging.INFO, "Formatting partitioned text into documents")
+        print("Formatting partitioned text into documents")
         # create the doc objects
         for text in segmented_texts:
             doc = Document(
@@ -185,70 +201,155 @@ def process_dataset_with_HDP(data_dict, index_name):
                 metadata = {"int_id": int_id, "kind": kind, "title": title}
             )
             content_docs.append(doc)
-        logger.log(logging.INFO, "Created docs " + str(content_docs))
 
         # all_segments.append(text) Only do this if we want to embed across all entries
-        logger.log(logging.INFO, "Entering content docs embedding and Upsert to the VectorDB")
+        print("Entering content docs embedding and Upsert to the VectorDB")
         # upsert and embed the docs to the VectorDB
         upsertToVectorDB(content_docs, index_name)
-    logger.log(logging.INFO, "Completed segmentation and Upsert of all content docs")
+    print("Completed segmentation and Upsert of all content docs")
     return
 
+
+def process_content_parallel(content, kind, title, int_id,  index_name):
+    print("entered a single loop of this function")
+    #multiprocessing.log_to_stderr("entered process content")
+    try:
+        content_docs = []
+        print("Preprocessing content texts with HDP")
+
+        # preprocess the text of the content entry
+
+        texts, original_sentences = preprocessText(content)
+        # run HDP and topic segment the content text
+        segmented_texts = applyHDPTopicModelSegmentation(texts, original_sentences)
+
+        print("Formatting partitioned text into documents")
+        # create the doc objects
+        for text in segmented_texts:
+            doc = Document(
+                page_content = text,
+                metadata = {"int_id": int_id, "kind": kind, "title": title}
+            )
+            content_docs.append(doc)
+
+        # all_segments.append(text) Only do this if we want to embed across all entries
+        print("Entering content docs embedding and Upsert to the VectorDB")
+        # upsert and embed the docs to the VectorDB
+        upsertToVectorDB(content_docs, index_name)
+        print("Upsert Complete")
+        # Use a ProcessPoolExecutor to run the process_content function in parallel
+    except Exception as e:
+        print( f"Error processing content: {e}")
+        raise e
+    return content_docs
+
+
+
+def process_content_parallel_unpack(args):
+    return process_content_parallel(*args)
+
+def process_content_parallel_unpack_autorag(args):
+    return process_content_parallel_autorag(*args)
+# Parallel intro step
 def process_dataset_with_HDP_parallel(data_dict, index_name):
-    def process_content(index_content_tuple):
-        multiprocessing.log_to_stderr("entered process content")
-        try:
-            i, content = index_content_tuple
-            print(content)
-            # establish the metadata for this entry
-            int_id = data_dict['int_id'][i]
-            kind = data_dict['kind'][i]
-            title = data_dict['title'][i]
-            content_docs = []
-            logger.log(logging.INFO, "Preprocessing content texts with HDP")
 
-            # preprocess the text of the content entry
-            multiprocessing.log_to_stderr("preparing to enter preprocess")
 
-            texts, original_sentences = preprocessText(content)
-            # run HDP and topic segment the content text
-            segmented_texts = applyHDPTopicModelSegmentation(texts, original_sentences)
+    # Preparing data list for executor
+    content_list = [(data_dict['content'][i], data_dict['kind'][i], data_dict['title'][i], data_dict['int_id'][i], index_name) for i in range(len(data_dict['content']))]
 
-            logger.log(logging.INFO, "Formatting partitioned text into documents")
-            # create the doc objects
-            for text in segmented_texts:
-                doc = Document(
-                    page_content = text,
-                    metadata = {"int_id": int_id, "kind": kind, "title": title}
-                )
-                content_docs.append(doc)
-            logger.log(logging.INFO, "Created docs " + str(content_docs))
+    results = []
+    # Initialize tqdm progress bar
 
-            # all_segments.append(text) Only do this if we want to embed across all entries
-            logger.log(logging.INFO, "Entering content docs embedding and Upsert to the VectorDB")
-            # upsert and embed the docs to the VectorDB
-            upsertToVectorDB(content_docs, index_name)
-            # Use a ProcessPoolExecutor to run the process_content function in parallel
-        except Exception as e:
-            logger.log(logging.ERROR, f"Error processing content: {e}")
-            return
-
+    # Using ProcessPoolExecutor to execute tasks in parallel
     with concurrent.futures.ProcessPoolExecutor() as executor:
-        logger.info("About to call executor.map")
-        executor.map(process_content, enumerate(data_dict['content']))
-        logger.info("Finished calling executor.map")
+        # Submit each task individually
+        future_to_content = {executor.submit(process_content_parallel_unpack, content): content for content in content_list}
 
-    logger.log(logging.INFO, "Completed segmentation and Upsert of all content docs")
-    return
+        # As each task completes, update the progress bar
+        for future in tqdm(concurrent.futures.as_completed(future_to_content), total=len(data_dict['content']), desc="Processing Entries"):
+            result = future.result()  # Retrieve the result (or handle exceptions)
+            results.append(result)
 
-# TODO: function to iterate over the dataset, apply topic modelling, and create documents
-def process_dataset_without_chunking(data_dict):
-    return None
+    print("Completed processing")
+    return results
 
-# End to End execution
-def process_dataset_pipeline(file_path, index_name):
-    logger.log(logging.INFO, "Retrieving dataset")
-    data_dict = ingest_dataset(file_path)
-    logger.log(logging.INFO, "Embedding and Upsert to the VectorDB")
-    process_dataset_with_HDP(data_dict, index_name)
-    return
+# End to End execution - Serial
+def process_dataset_pipeline(index_name):
+    print("Retrieving dataset")
+    data_dict = ingest_dataset(f'util/{index_name}_dataset.parquet')
+    print("Embedding and Upsert to the VectorDB")
+    result_docs = process_dataset_with_HDP_serial(data_dict, index_name)
+    return result_docs
+
+# End to End execution - Parallel
+def process_dataset_pipeline_parallel(index_name):
+    print("Retrieving dataset")
+    data_dict = ingest_dataset(f'util/{index_name}_dataset.parquet')
+    print("Embedding and Upsert to the VectorDB")
+    result_docs = process_dataset_with_HDP_parallel(data_dict, index_name)
+    return result_docs
+
+def process_dataset_pipeline_parallel_autorag(index_name):
+    print("Retrieving dataset")
+    data_dict = ingest_dataset(f'util/{index_name}_dataset.parquet')
+    result_docs = process_dataset_with_HDP_parallel_autorag(data_dict, index_name)
+    return result_docs
+
+
+# Strategy 2 - Holistic embedding with HDP chunking
+def process_content_parallel_autorag(content, kind, title, int_id,  index_name):
+    print("entered a single loop of this function")
+    #multiprocessing.log_to_stderr("entered process content")
+    try:
+        content_docs = []
+        print("Preprocessing content texts with HDP")
+
+        # preprocess the text of the content entry
+        texts, original_sentences = preprocessText(content)
+        # run HDP and topic segment the content text
+        segmented_texts = applyHDPTopicModelSegmentation(texts, original_sentences)
+
+        print("Formatting partitioned text into documents")
+        # create the doc objects
+        for text in segmented_texts:
+            doc = Document(
+                page_content = text,
+                metadata = {"int_id": int_id, "kind": kind, "title": title}
+            )
+            content_docs.append(doc)
+
+    except Exception as e:
+        print( f"Error processing content: {e}")
+        raise e
+    return content_docs
+
+def process_dataset_with_HDP_parallel_autorag(data_dict, index_name):
+
+    # Preparing data list for executor
+    content_list = [(data_dict['content'][i], data_dict['kind'][i], data_dict['title'][i], data_dict['int_id'][i], index_name) for i in range(len(data_dict['content']))]
+
+    results = []
+    # Initialize tqdm progress bar
+
+    # Using ProcessPoolExecutor to execute tasks in parallel
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        # Submit each task individually
+        future_to_content = {executor.submit(process_content_parallel_unpack_autorag, content): content for content in content_list}
+
+        # As each task completes, update the progress bar
+        for future in tqdm(concurrent.futures.as_completed(future_to_content), total=len(data_dict['content']), desc="Processing Entries"):
+            result = future.result()  # Retrieve the result (or handle exceptions)
+            results.append(result)
+
+    print("Completed processing")
+    return results
+
+def init_multiprocessing():
+    if multiprocessing.get_start_method(allow_none=True) != 'forkserver':
+        multiprocessing.set_start_method('forkserver', force=True)
+
+if __name__ == "__main__":
+    init_multiprocessing()
+    print(os.getcwd())
+    os.chdir("/Users/dcampbel/Nextcloud/Repositories/masterclassRetrieval/")
+    process_dataset_pipeline_parallel("live")
