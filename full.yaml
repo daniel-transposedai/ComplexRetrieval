@@ -20,7 +20,7 @@ node_lines:
       strategy:
         metrics: [ retrieval_f1, retrieval_recall, retrieval_precision ]
         speed_threshold: 10
-        top_k: 5
+      top_k: 3
       modules:
         - module_type: flag_embedding_llm_reranker
           batch: 32
