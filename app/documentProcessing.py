@@ -34,6 +34,9 @@ embeddings = OpenAIEmbeddings(
     openai_api_key=os.environ.get("OPENAI_API_KEY")
 )
 
+def init_multiprocessing():
+    if multiprocessing.get_start_method(allow_none=True) != 'forkserver':
+        multiprocessing.set_start_method('forkserver', force=True)
 
 # function to ingress dataset into a pandas dataframe
 def ingest_dataset(file_path):
@@ -54,6 +57,7 @@ def ingest_dataset(file_path):
     print("This ingestion is complete")
     return data_dict
 
+
 # Function to read and preprocess dataset csv from a file
 def preprocessText(text):
     documents = sent_tokenize(text)
@@ -70,7 +74,7 @@ def applyHDPTopicModelSegmentation(texts, original_sentences):
     corpus = [dictionary.doc2bow(text) for text in texts]
 
     # Apply HDP and get dominant topics
-    topic_boundaries = getDominantTopic_delimited(corpus, dictionary)
+    topic_boundaries = getDominantTopic_limited(corpus, dictionary)
 
     # Segment the text based on topic boundaries
     segmented_texts = []
@@ -105,7 +109,7 @@ def getDominantTopic(corpus, dictionary):
 
     return topic_boundaries
 
-def getDominantTopic_delimited(corpus, dictionary, min_segment_size=3):
+def getDominantTopic_limited(corpus, dictionary, min_segment_size=3):
 
     # Applying the HDP model
     hdp = models.HdpModel(corpus, id2word=dictionary)
@@ -127,16 +131,6 @@ def getDominantTopic_delimited(corpus, dictionary, min_segment_size=3):
 
     return topic_boundaries
 
-# Function to get embeddings using OpenAI API
-"""def getEmbeddings(texts):
-    client = OpenAI()
-    embeddings = []
-    for text in texts:
-        response = client.embeddings.create(input=text,
-        model="text-embedding-3-large")
-        embeds = [record.embedding for record in response.data]
-        embeddings += embeds
-    return embeddings"""
 
 def upsertToVectorDB(documents, index_name):
 
@@ -175,8 +169,6 @@ def upsertToVectorDB(documents, index_name):
 
 # function to iterate over the dataset, apply topic modelling, and create documents
 def process_dataset_with_HDP_serial(data_dict, index_name):
-
-    #all_segments = [] Only do this if we want to embed across all entries
 
     # iterate over the dataset and create documents
     # we will want to do this in parallel. TODO: make this async
@@ -244,16 +236,15 @@ def process_content_parallel(content, kind, title, int_id,  index_name):
     return content_docs
 
 
-
 def process_content_parallel_unpack(args):
     return process_content_parallel(*args)
 
 def process_content_parallel_unpack_autorag(args):
     return process_content_parallel_autorag(*args)
-# Parallel intro step
+
+
+# Parallel intro step (no AutoRAG)
 def process_dataset_with_HDP_parallel(data_dict, index_name):
-
-
     # Preparing data list for executor
     content_list = [(data_dict['content'][i], data_dict['kind'][i], data_dict['title'][i], data_dict['int_id'][i], index_name) for i in range(len(data_dict['content']))]
 
@@ -273,31 +264,12 @@ def process_dataset_with_HDP_parallel(data_dict, index_name):
     print("Completed processing")
     return results
 
-# End to End execution - Serial
-def process_dataset_pipeline(index_name):
-    print("Retrieving dataset")
-    data_dict = ingest_dataset(f'util/{index_name}_dataset.parquet')
-    print("Embedding and Upsert to the VectorDB")
-    result_docs = process_dataset_with_HDP_serial(data_dict, index_name)
-    return result_docs
 
-# End to End execution - Parallel
-def process_dataset_pipeline_parallel(index_name):
-    print("Retrieving dataset")
-    data_dict = ingest_dataset(f'util/{index_name}_dataset.parquet')
-    print("Embedding and Upsert to the VectorDB")
-    result_docs = process_dataset_with_HDP_parallel(data_dict, index_name)
-    return result_docs
 
-def process_dataset_pipeline_parallel_autorag(index_name):
-    print("Retrieving dataset")
-    data_dict = ingest_dataset(f'util/{index_name}_dataset.parquet')
-    result_docs = process_dataset_with_HDP_parallel_autorag(data_dict, index_name)
-    return result_docs
 
 
 # Strategy 2 - Holistic embedding with HDP chunking
-def process_content_parallel_autorag(content, kind, title, int_id,  index_name):
+def process_content_parallel_autorag(content, kind, title, int_id,):
     print("entered a single loop of this function")
     #multiprocessing.log_to_stderr("entered process content")
     try:
@@ -344,12 +316,27 @@ def process_dataset_with_HDP_parallel_autorag(data_dict, index_name):
     print("Completed processing")
     return results
 
-def init_multiprocessing():
-    if multiprocessing.get_start_method(allow_none=True) != 'forkserver':
-        multiprocessing.set_start_method('forkserver', force=True)
+
+
+# End to End execution - Serial
+def process_dataset_pipeline(index_name):
+    print("Retrieving dataset")
+    data_dict = ingest_dataset(f'util/{index_name}_dataset.parquet')
+    print("Embedding and Upsert to the VectorDB")
+    result_docs = process_dataset_with_HDP_serial(data_dict, index_name)
+    return result_docs
+
+
+# End to End execution - Parallel
+def process_dataset_pipeline_parallel_autorag(index_name):
+    print("Retrieving dataset")
+    data_dict = ingest_dataset(f'util/{index_name}_dataset.parquet')
+    result_docs = process_dataset_with_HDP_parallel_autorag(data_dict, index_name)
+    return result_docs
+
 
 if __name__ == "__main__":
     init_multiprocessing()
     print(os.getcwd())
     os.chdir("/Users/dcampbel/Nextcloud/Repositories/masterclassRetrieval/")
-    process_dataset_pipeline_parallel("live")
+    process_dataset_pipeline_parallel_autorag("live")

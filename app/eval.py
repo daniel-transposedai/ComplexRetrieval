@@ -14,8 +14,12 @@ import logging
 import uuid
 from autorag.evaluator import Evaluator
 from autorag.utils import cast_qa_dataset
+import re
 from autorag.data.corpus import llama_text_node_to_parquet
-from app.documentProcessing import init_multiprocessing, process_dataset_pipeline_parallel_autorag
+from app.documentProcessing import (init_multiprocessing,
+                                    process_dataset_pipeline_parallel_autorag,
+                                    process_dataset_pipeline_parallel_testing)
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 load_dotenv(find_dotenv())
 
@@ -25,12 +29,11 @@ logger = logging.getLogger(__name__)
 
 def build_synthetic_template(index_name, eval_version = "", use_existing=True):
     nest_asyncio.apply()
-    if use_existing and os.path.isfile(f'util/{index_name}{eval_version}_template_eval.csv'):
+    if use_existing and os.path.isfile(f'util/{index_name}{eval_version}_template_eval.parquet'):
         print(f"Eval template set for {index_name}{eval_version} already exists. Skipping...")
 
-        return Dataset.from_csv(f'util/{index_name}{eval_version}_template_eval.csv')
+        return Dataset.from_parquet(f'util/{index_name}{eval_version}_template_eval.parquet')
     else:
-
         documents = []
         df = pd.read_parquet(f"util/{index_name}{eval_version}_dataset.parquet")
 
@@ -45,19 +48,6 @@ def build_synthetic_template(index_name, eval_version = "", use_existing=True):
             # Append the Document object to the list
             documents.append(document)
 
-        # Old Method
-        """print(os.getcwd())
-        csv.field_size_limit(sys.maxsize)
-        # Load the contents from the dataset
-        pd.read_parquet(f'util/{index_name}{eval_version}_dataset.parquet').to_csv(
-            f'{os.getcwd()}/util/{index_name}{eval_version}_dataset.csv')
-
-        
-        # create documents next
-        loader = CSVLoader(f"util/{index_name}_dataset.csv", metadata_columns=['int_id', 'title', 'kind'])
-        documents = loader.load()
-        print(documents)
-        """
 
         generator_llm = ChatOpenAI(model="gpt-4o")
         critic_llm = ChatOpenAI(model="gpt-4-turbo")
@@ -68,10 +58,10 @@ def build_synthetic_template(index_name, eval_version = "", use_existing=True):
             critic_llm,
             embeddings
         )
-        testset = generator.generate_with_langchain_docs(documents, test_size=50,
+        testset = generator.generate_with_langchain_docs(documents, test_size=50,distributions={
+                                                        simple: 0.5, reasoning: 0.4, multi_context: 0.10
+                                                        })
 
-                                                    distributions={simple: 0.5, reasoning: 0.4,
-                                                                        multi_context: 0.10})
         dataset = testset.to_dataset()
         dataset.to_csv(f"./util/{index_name}{eval_version}_template_eval.csv", index=False)
         return dataset
@@ -104,7 +94,8 @@ def generate_context_response(index_name, eval_template_dataframe, eval_version 
     answer_metadata = [[x.metadata for x in entry] for entry in answers]
 
     # Rename columns as needed in the original dataframe
-    eval_template_dataframe.rename(columns={'contexts': 'synth_contexts', 'metadata': 'synth_metadata'}, inplace=True)
+    eval_template_dataframe.rename(columns={'contexts': 'synth_contexts',
+                                            'metadata': 'synth_metadata'}, inplace=True)
 
     # Bringing into Dataset format for Ragas
     final_dataset = Dataset.from_pandas(eval_template_dataframe)
@@ -136,7 +127,9 @@ def eval_responses_pipeline(index_name, eval_version = "", use_existing=True):
 
 
 # re-wrote auto-rag package qa generation script to work directly with langchain documents (less overhead)
-def generate_qa_autorag(distributions, generator_llm, critic_llm, embedding_model, test_size, langchain_docs, **kwargs) -> pd.DataFrame:
+def generate_qa_autorag(distributions, generator_llm, critic_llm,
+                        embedding_model, test_size, langchain_docs, **kwargs) -> pd.DataFrame:
+
     assert sum(list(distributions.values())) == 1.0, "Sum of distributions must be 1.0"
 
     generator = TestsetGenerator.from_langchain(generator_llm, critic_llm, embedding_model)
@@ -181,23 +174,28 @@ def build_synthetic_template_autorag(index_name, eval_version="", use_existing=T
 
         return pd.read_parquet(f'util/{index_name}{eval_version}_template_eval_autorag.parquet')
     else:
+
+        print("building autorag template")
         # check if autorag configured dataset exists
         if not os.path.isfile(f'util/{index_name}{eval_version}_dataset_autorag.parquet'):
             prepare_dataset_autorag(index_name, eval_version)
 
-        print("building autorag template")
-
         df = pd.read_parquet(f"util/{index_name}{eval_version}_dataset_autorag.parquet")
 
-        # use iloc to slice shorter
-        quarter_length = len(df) // 10
-        first_quarter_df = df.iloc[:quarter_length]
+
+        # use iloc to slice shorter to speed up process (and make my wallet not hurt as much)
+        tenth_length = len(df) // 10
+        first_tenth_df = df.iloc[:tenth_length]
+        first_tenth_df.to_parquet(f"util/{index_name}{eval_version}_dataset_autorag_ftenth.parquet")
 
         documents = []
-        for index, row in first_quarter_df.iterrows():
+        for index, row in first_tenth_df.iterrows():
             # Extract the content and metadata values
             content = row['contents']
-            metadata = {'doc_id': row['doc_id'], 'int_id': row['int_id'],'title': row['title'], 'kind': row['kind']}
+            metadata = {
+                'doc_id': row['doc_id'], 'int_id': row['int_id'],
+                'title': row['title'], 'kind': row['kind']
+            }
 
             # Create a new Document object with the content and metadata
             document = Document(content, metadata=metadata)
@@ -205,8 +203,8 @@ def build_synthetic_template_autorag(index_name, eval_version="", use_existing=T
             # Append the Document object to the list
             documents.append(document)
 
-        generator_llm = ChatOpenAI(model="gpt-4o")
-        critic_llm = ChatOpenAI(model="gpt-4-turbo")
+        generator_llm = ChatOpenAI(model="gpt-3.5-turbo")
+        critic_llm = ChatOpenAI(model="gpt-4o")
         embeddings = OpenAIEmbeddings()
 
         distributions = {  # uniform distribution
@@ -215,23 +213,28 @@ def build_synthetic_template_autorag(index_name, eval_version="", use_existing=T
             multi_context: 0.10,
         }
 
-        qa_df = generate_qa_autorag(distributions=distributions, generator_llm=generator_llm, critic_llm=critic_llm,
-                                    embedding_model=embeddings, test_size=50, langchain_docs=documents)
+        qa_df = generate_qa_autorag(distributions=distributions, generator_llm=generator_llm,
+                                    critic_llm=critic_llm, embedding_model=embeddings, test_size=50,
+                                    langchain_docs=documents)
 
         os.chdir("/Users/dcampbel/Nextcloud/Repositories/masterclassRetrieval")
-        qa_df.to_parquet(f"./util/{index_name}{eval_version}_template_eval_autorag.parquet")
+        qa_df.to_parquet(f"./util/{index_name}{eval_version}_template_eval_autorag_ftenth.parquet")
         return qa_df
 
 
 def try_autorag(index_name, eval_version=""):
     print(os.getcwd())
-    evaluator = Evaluator(qa_data_path='util/live_template_eval_autorag.parquet', corpus_data_path='util/live_dataset_autorag.parquet')
+    evaluator = Evaluator(qa_data_path=f'util/{index_name}{eval_version}_template_eval_autorag.parquet',
+                          corpus_data_path=f'util/{index_name}{eval_version}_dataset_autorag_eval_fquarter.parquet')
     print("Starting trial")
     evaluator.start_trial('full.yaml')
 
+
+
 if __name__ == "__main__":
+
     os.chdir("..")
-    build_synthetic_template_autorag("live", use_existing=True)
+    build_synthetic_template("live", use_existing=True)
     print("Now entering autorag pipeline...")
     try_autorag(index_name="live")
 
