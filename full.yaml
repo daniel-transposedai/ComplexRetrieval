@@ -10,6 +10,21 @@ node_lines:
         - module_type: bm25
         - module_type: vectordb
           embedding_model: openai
+                - module_type: hybrid_rrf
+          target_modules: ('bm25', 'vectordb')
+          rrf_k: [ 3, 5, 10 ]
+        - module_type: hybrid_cc
+          target_modules: ('bm25', 'vectordb')
+          weights:
+            - (0.5, 0.5)
+            - (0.3, 0.7)
+            - (0.7, 0.3)
+        - module_type: hybrid_rsf
+          target_modules: ('bm25', 'vectordb')
+          weights:
+            - (0.5, 0.5)
+            - (0.3, 0.7)
+            - (0.7, 0.3)
         - module_type: hybrid_dbsf
           target_modules: ('bm25', 'vectordb')
           weights:
