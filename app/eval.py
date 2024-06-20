@@ -174,20 +174,22 @@ def build_synthetic_template_autorag(index_name, eval_version="", use_existing=T
 
         return pd.read_parquet(f'util/{index_name}{eval_version}_template_eval_autorag.parquet')
     else:
+
+        print("building autorag template")
         # check if autorag configured dataset exists
         if not os.path.isfile(f'util/{index_name}{eval_version}_dataset_autorag.parquet'):
             prepare_dataset_autorag(index_name, eval_version)
 
-        print("building autorag template")
-
         df = pd.read_parquet(f"util/{index_name}{eval_version}_dataset_autorag.parquet")
 
-        # use iloc to slice shorter
-        quarter_length = len(df) // 10
-        first_quarter_df = df.iloc[:quarter_length]
+
+        # use iloc to slice shorter to speed up process (and make my wallet not hurt as much)
+        tenth_length = len(df) // 10
+        first_tenth_df = df.iloc[:tenth_length]
+        first_tenth_df.to_parquet(f"util/{index_name}{eval_version}_dataset_autorag_ftenth.parquet")
 
         documents = []
-        for index, row in first_quarter_df.iterrows():
+        for index, row in first_tenth_df.iterrows():
             # Extract the content and metadata values
             content = row['contents']
             metadata = {
@@ -201,8 +203,8 @@ def build_synthetic_template_autorag(index_name, eval_version="", use_existing=T
             # Append the Document object to the list
             documents.append(document)
 
-        generator_llm = ChatOpenAI(model="gpt-4o")
-        critic_llm = ChatOpenAI(model="gpt-4-turbo")
+        generator_llm = ChatOpenAI(model="gpt-3.5-turbo")
+        critic_llm = ChatOpenAI(model="gpt-4o")
         embeddings = OpenAIEmbeddings()
 
         distributions = {  # uniform distribution
@@ -216,7 +218,7 @@ def build_synthetic_template_autorag(index_name, eval_version="", use_existing=T
                                     langchain_docs=documents)
 
         os.chdir("/Users/dcampbel/Nextcloud/Repositories/masterclassRetrieval")
-        qa_df.to_parquet(f"./util/{index_name}{eval_version}_template_eval_autorag.parquet")
+        qa_df.to_parquet(f"./util/{index_name}{eval_version}_template_eval_autorag_ftenth.parquet")
         return qa_df
 
 
@@ -228,116 +230,12 @@ def try_autorag(index_name, eval_version=""):
     evaluator.start_trial('full.yaml')
 
 
-def prepare_dataset_testing(index_name, eval_version=""):
-    init_multiprocessing()
-    results = process_dataset_pipeline_parallel_testing(index_name)
-
-    flattened_results = [doc for sublist in results for doc in sublist]
-    rows = []
-    print(results)
-    for sublist in results:
-        for doc in sublist:
-            row = {'content': doc.page_content,
-                   'int_id': doc.metadata['int_id'],
-                   'kind': doc.metadata['kind'],
-                   'title': doc.metadata['title'],
-                   'doc_id': doc.metadata['doc_id'],
-                   'metadata': doc.metadata}
-            rows.append(row)
-    df = pd.DataFrame(rows)
-    df.to_parquet(f'util/{index_name}{eval_version}_dataset_testing.parquet')
-    return flattened_results
-
-def build_synthetic_template_testing(index_name, eval_version = "", use_existing=True):
-    nest_asyncio.apply()
-    if use_existing and os.path.isfile(f'util/{index_name}{eval_version}_template_eval_testing_fiftyth.parquet'):
-        print(f"Eval template set for {index_name}{eval_version} already exists. Skipping...")
-
-        return Dataset.from_parquet(f'util/{index_name}{eval_version}_template_eval_testing_fiftyth.parquet')
-    else:
-        if not os.path.isfile(f'util/{index_name}{eval_version}_dataset_testing.parquet'):
-            result_docs = prepare_dataset_testing(index_name, eval_version)
-        else:
-            result_docs = pd.read_parquet(f"util/{index_name}{eval_version}_dataset_testing.parquet")
-
-        generator_llm = ChatOpenAI(model="gpt-4o")
-        critic_llm = ChatOpenAI(model="gpt-4-turbo")
-        embeddings = OpenAIEmbeddings()
-
-        df = pd.read_parquet(f"util/{index_name}{eval_version}_dataset_autorag.parquet")
-        quarter_length = len(df) // 50
-        first_fiftyth_df = df.iloc[:quarter_length]
-        df.to_parquet(f"util/{index_name}{eval_version}_dataset_testing_fiftyth.parquet")
-
-        documents = []
-        for index, row in first_fiftyth_df.iterrows():
-            # Extract the content and metadata values
-            content = row['contents']
-            metadata = {
-                'doc_id': row['doc_id'], 'int_id': row['int_id'],
-                'title': row['title'], 'kind': row['kind']
-            }
-            # Create a new Document object with the content and metadata
-            document = Document(content, metadata=metadata)
-            print(document.metadata)
-            # Append the Document object to the list
-            documents.append(document)
-
-
-        generator = TestsetGenerator.from_langchain(
-            generator_llm,
-            critic_llm,
-            embeddings
-        )
-        testset = generator.generate_with_langchain_docs(documents, test_size=10,
-
-                                                    distributions={simple: 0.5, reasoning: 0.4,
-                                                                        multi_context: 0.10})
-        dataset = testset.to_dataset()
-        dataset.to_parquet(f"./util/{index_name}{eval_version}_template_eval_testing_fiftyth.parquet", index=False)
-        return dataset
-
-
-def parse_list_of_dicts(s):
-    # Replace single quotes with double quotes
-    s = s.replace("'", '"')
-
-    # Manually parse the string to convert to list of dictionaries
-    s = s.strip()[1:-1]  # Remove enclosing square brackets
-    dicts = []
-    for match in re.finditer(r'\{[^}]+\}', s):
-        dict_str = match.group(0)
-        dict_obj = {}
-        for key, value in re.findall(r'"(.*?)"\s*:\s*"(.*?)"', dict_str):
-            dict_obj[key] = value
-        dicts.append(dict_obj)
-    return dicts
-
-def reorient_dataset_testing():
-    test_df = pd.read_parquet(f"./util/live_template_eval_testing_fiftyth.parquet")
-    test_df = test_df.rename(columns={'contents': 'contexts'})
-
-    result_df = pd.DataFrame({
-        'qid': [str(uuid.uuid4()) for _ in range(len(test_df))],
-        'query': test_df['question'].tolist(),
-        'generation_gt': list(map(lambda x: x, test_df['ground_truth'].tolist())),
-    })
-    print(result_df)
-
-    # Casting back to int and retrieving for retrieval_gt\
-    test_df['metadata'] = test_df['metadata'].apply(parse_list_of_dicts)
-    result_df['retrieval_gt'] = test_df['metadata'].apply(lambda x: list(map(lambda y: y['doc_id'], x)))
-    print(result_df)
-    result_df = cast_qa_dataset(result_df)
-    result_df.to_parquet(f"./util/live_template_eval_testing_fiftyth_autoragformat.parquet")
-    return result_df
-
 
 if __name__ == "__main__":
+
     os.chdir("..")
-    build_synthetic_template_testing("live", use_existing=True)
-    reorient_dataset_testing()
-    #print("Now entering autorag pipeline...")
-    #try_autorag(index_name="live")
+    build_synthetic_template("live", use_existing=True)
+    print("Now entering autorag pipeline...")
+    try_autorag(index_name="live")
 
 
