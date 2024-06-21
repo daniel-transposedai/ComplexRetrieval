@@ -15,7 +15,7 @@ import uuid
 from autorag.evaluator import Evaluator
 from autorag.utils import cast_qa_dataset
 import numpy as np
-from autorag.deploy import extract_best_config
+import sys
 from app.documentProcessing import (init_multiprocessing,
                                     process_dataset_pipeline_parallel_autorag)
 import subprocess
@@ -25,6 +25,8 @@ load_dotenv(find_dotenv())
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
 def build_synthetic_template(index_name, eval_version = "", use_existing=True):
