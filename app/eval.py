@@ -327,7 +327,7 @@ def child_to_master_autorag_pipeline(index_name, eval_version="", use_original_c
 
 
 if __name__ == "__main__":
-    os.chdir("..")
+    print(os.getcwd())
     # switch here for different pipelines
     runproject_name ="runv3"
     trialnum_foryaml = "0"
