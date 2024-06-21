@@ -7,5 +7,7 @@ __pycache__
 *.csv
 *.json
 *.parquet
-/resources/*
-/data/*
+/tmp_dir/resources/*
+/tmp_dir/data/*
+/tmp_dir/*
+/run*/

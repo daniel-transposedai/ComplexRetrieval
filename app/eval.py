@@ -8,17 +8,16 @@ from ragas.metrics import answer_relevancy, faithfulness, context_recall, contex
 from dotenv import load_dotenv, find_dotenv
 from datasets import Dataset, Sequence, Value
 import pandas as pd
-from app.generateResponses import create_response_dataframe
+from app.generateResponses import create_response_dataframe, generate_response_pipeline_autorag
 from langchain_core.documents import Document
 import logging
 import uuid
 from autorag.evaluator import Evaluator
 from autorag.utils import cast_qa_dataset
-import re
-from autorag.data.corpus import llama_text_node_to_parquet
+import numpy as np
+from autorag.deploy import extract_best_config
 from app.documentProcessing import (init_multiprocessing,
-                                    process_dataset_pipeline_parallel_autorag,
-                                    process_dataset_pipeline_parallel_testing)
+                                    process_dataset_pipeline_parallel_autorag)
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 load_dotenv(find_dotenv())
@@ -126,6 +125,7 @@ def eval_responses_pipeline(index_name, eval_version = "", use_existing=True):
     return completed_eval_dataframe
 
 
+
 # re-wrote auto-rag package qa generation script to work directly with langchain documents (less overhead)
 def generate_qa_autorag(distributions, generator_llm, critic_llm,
                         embedding_model, test_size, langchain_docs, **kwargs) -> pd.DataFrame:
@@ -149,9 +149,9 @@ def generate_qa_autorag(distributions, generator_llm, critic_llm,
     return result_df
 
 
-def prepare_dataset_autorag(index_name, eval_version=""):
+def prepare_dataset_autorag(index_name, min_chunk_segments, eval_version):
     init_multiprocessing()
-    results = process_dataset_pipeline_parallel_autorag(index_name)
+    results = process_dataset_pipeline_parallel_autorag(index_name, min_chunk_segments)
     rows = []
     print(results)
     for sublist in results:
@@ -164,10 +164,10 @@ def prepare_dataset_autorag(index_name, eval_version=""):
             rows.append(row)
     df = pd.DataFrame(rows)
     df = df.assign(doc_id=[str(uuid.uuid4()) for _ in range(len(df))])
-    df.to_parquet(f'util/{index_name}{eval_version}_dataset_autorag.parquet')
+    df.to_parquet(f'util/{index_name}{eval_version}_chunked{min_chunk_segments}_dataset_autorag.parquet')
     return df
 
-def build_synthetic_template_autorag(index_name, eval_version="", use_existing=True):
+def build_synthetic_template_autorag(index_name, eval_version="", use_existing=True, min_chunk_segments=3):
     print("building autorag template")
     if use_existing and os.path.isfile(f'util/{index_name}{eval_version}_template_eval_autorag.parquet'):
         print(f"Eval Autorag template set for {index_name}{eval_version} already exists. Skipping...")
@@ -178,7 +178,7 @@ def build_synthetic_template_autorag(index_name, eval_version="", use_existing=T
         print("building autorag template")
         # check if autorag configured dataset exists
         if not os.path.isfile(f'util/{index_name}{eval_version}_dataset_autorag.parquet'):
-            prepare_dataset_autorag(index_name, eval_version)
+            prepare_dataset_autorag(index_name, min_chunk_segments, eval_version)
 
         df = pd.read_parquet(f"util/{index_name}{eval_version}_dataset_autorag.parquet")
 
@@ -186,7 +186,7 @@ def build_synthetic_template_autorag(index_name, eval_version="", use_existing=T
         # use iloc to slice shorter to speed up process (and make my wallet not hurt as much)
         tenth_length = len(df) // 10
         first_tenth_df = df.iloc[:tenth_length]
-        first_tenth_df.to_parquet(f"util/{index_name}{eval_version}_dataset_autorag_ftenth.parquet")
+        first_tenth_df.to_parquet(f"util/{index_name}{eval_version}_eval_dataset_autorag.parquet")
 
         documents = []
         for index, row in first_tenth_df.iterrows():
@@ -203,39 +203,155 @@ def build_synthetic_template_autorag(index_name, eval_version="", use_existing=T
             # Append the Document object to the list
             documents.append(document)
 
-        generator_llm = ChatOpenAI(model="gpt-3.5-turbo")
+        generator_llm = ChatOpenAI(model="gpt-4o")
         critic_llm = ChatOpenAI(model="gpt-4o")
         embeddings = OpenAIEmbeddings()
 
         distributions = {  # uniform distribution
-            simple: 0.5,
-            reasoning: 0.4,
-            multi_context: 0.10,
+            simple: 0.25,
+            reasoning: 0.45,
+            multi_context: 0.30,
         }
 
         qa_df = generate_qa_autorag(distributions=distributions, generator_llm=generator_llm,
-                                    critic_llm=critic_llm, embedding_model=embeddings, test_size=50,
+                                    critic_llm=critic_llm, embedding_model=embeddings, test_size=5,
                                     langchain_docs=documents)
 
         os.chdir("/Users/dcampbel/Nextcloud/Repositories/masterclassRetrieval")
-        qa_df.to_parquet(f"./util/{index_name}{eval_version}_template_eval_autorag_ftenth.parquet")
+        qa_df.to_parquet(f"./util/{index_name}{eval_version}_template_eval_autorag.parquet")
         return qa_df
 
+def try_autorag(index_name, project_dir=os.getcwd(), eval_version="", qa_data_path = "", corpus_data_path = ""):
 
-def try_autorag(index_name, eval_version=""):
+    if (qa_data_path == "" or corpus_data_path == ""):
+        # ignoring if only one is set
+        qa_data_path = f'util/{index_name}{eval_version}_template_eval_autorag.parquet'
+        corpus_data_path = f'util/{index_name}_dataset_autorag.parquet'
+
     print(os.getcwd())
-    evaluator = Evaluator(qa_data_path=f'util/{index_name}{eval_version}_template_eval_autorag.parquet',
-                          corpus_data_path=f'util/{index_name}{eval_version}_dataset_autorag_eval_fquarter.parquet')
+    evaluator = Evaluator(qa_data_path=qa_data_path,
+                          corpus_data_path=corpus_data_path, project_dir=project_dir)
     print("Starting trial")
     evaluator.start_trial('full.yaml')
 
+def build_child_to_master_synthetic_template_autorag(index_name, eval_version="", use_existing=True, min_chunk_segments=3):
+    print("building child templates -> master template from core autorag dataset")
+    df = pd.read_parquet('util/live_dataset_autorag.parquet')
+
+    # identify unique id's
+    unique_int_ids = df['int_id'].unique()
+
+    # randomly select 5 unique int_ids for our child dfs (same document for each)
+    selected_int_ids = np.random.choice(unique_int_ids, size=5, replace=False)
+
+    # Create the list of child from all rows of the selected int_ids
+    child_dataframes = [df[df['int_id'] == int_id] for int_id in selected_int_ids]
+
+    print("building autorag templates for child dfs")
+    qa_dfs = []
+    for i, child_df in enumerate(child_dataframes):
+
+        # now we generate the qa_df for each of the child dfs
+        documents = []
+        for index, row in child_df.iterrows():
+            # Extract the content and metadata values
+            content = row['contents']
+            metadata = {
+                'doc_id': row['doc_id'], 'int_id': row['int_id'],
+                'title': row['title'], 'kind': row['kind']
+            }
+
+            # Create a new Document object with the content and metadata
+            document = Document(content, metadata=metadata)
+            print(document.metadata)
+            # Append the Document object to the list
+            documents.append(document)
+
+        generator_llm = ChatOpenAI(model="gpt-4o")
+        critic_llm = ChatOpenAI(model="gpt-4o")
+        embeddings = OpenAIEmbeddings()
+
+        distributions = {  # leaning towards multicontext
+            multi_context: 1.0
+        }
+
+        qa_df = generate_qa_autorag(distributions=distributions, generator_llm=generator_llm,
+                                    critic_llm=critic_llm, embedding_model=embeddings, test_size=11, # we want 10 but it often ends with 2 less
+                                    langchain_docs=documents)
+
+        os.chdir("/Users/dcampbel/Nextcloud/Repositories/masterclassRetrieval")
+        qa_df.to_parquet(f"./util/{index_name}{eval_version}_child{i}_template_eval_autorag.parquet")
+        qa_dfs.append(qa_df)
+
+    # Merge the child dfs into one df for evaluation qa
+    total_qa_df = pd.concat(qa_dfs, ignore_index=True)
+    total_qa_df.to_parquet(f'util/{index_name}{eval_version}_child_qa_total_autorag.parquet')
+
+    total_qa_path = f'util/{index_name}{eval_version}_child_qa_total_autorag.parquet'
+    total_qa_df.head(5)
+    return total_qa_path
+
+def autorag_pipeline(index_name, project_dir, eval_version=""):
+    build_synthetic_template_autorag(index_name, eval_version=eval_version, use_existing=True)
+    print("Now entering autorag pipeline...")
+    try_autorag(index_name=index_name, project_dir=project_dir, eval_version=eval_version)
+
+def child_to_master_autorag_pipeline(index_name, eval_version="", use_original_corpus = True,
+                                     project_dir=os.getcwd(), min_chunk_segments=3):
+    if use_original_corpus:
+        corpus_path = f'util/{index_name}_dataset_autorag.parquet'
+    else:
+        if not os.path.isfile(f'util/{index_name}{eval_version}_dataset_autorag.parquet'):
+            prepare_dataset_autorag(index_name, min_chunk_segments, eval_version)
+        corpus_path = f'util/{index_name}{eval_version}_dataset_autorag.parquet'
+
+    total_qa_path = f'util/{index_name}{eval_version}_child_qa_total_autorag.parquet'
+    #total_qa_path = f'util/{index_name}{eval_version}_template_eval_autorag_fquarter.parquet'
+    if (os.path.isfile(total_qa_path) and
+        os.path.isfile(corpus_path)):
+        print("Existing files found, entering autorag evaluation")
+        try_autorag(index_name="live", project_dir=project_dir, qa_data_path=total_qa_path, corpus_data_path=corpus_path, eval_version=eval_version)
+    else:
+        total_qa_path = build_child_to_master_synthetic_template_autorag(index_name, eval_version,
+                                                    use_existing=True, min_chunk_segments=min_chunk_segments)
+
+        print("Now entering autorag pipeline...")
+
+        try_autorag(index_name="live",project_dir=project_dir,  qa_data_path=total_qa_path, corpus_data_path=corpus_path, eval_version=eval_version)
 
 
 if __name__ == "__main__":
-
     os.chdir("..")
-    build_synthetic_template("live", use_existing=True)
-    print("Now entering autorag pipeline...")
-    try_autorag(index_name="live")
+    # switch here for different pipelines
+    runproject_name ="run3"
+    trialnum_foryaml = "0"
+    index_name = "live"
+    eval_version = "v2"
+    min_chunk_segments = 5
+    yaml_path = f'{os.getcwd()}/config/{runproject_name}/optimal.yaml'
+    project_dir = f'{os.getcwd()}/{runproject_name}'
+
+
+    print("Starting autorag pipeline...")
+
+    child_to_master_autorag_pipeline(index_name, project_dir=f'{os.getcwd()}/{runproject_name}',
+                                     eval_version=eval_version, min_chunk_segments=min_chunk_segments)
+
+    # autorag_pipeline("live", project_dir=f'{os.getcwd()}/{runproject_name}', eval_version="v1")
+
+
+    # retrieve the best config
+    print("retrieving best config...")
+    if not os.path.isdir(f'{os.getcwd()}/config/{runproject_name}'):
+        os.mkdir(f'{os.getcwd()}/config/{runproject_name}')
+
+    extract_best_config(trial_path=f'{os.getcwd()}/{runproject_name}/{trialnum_foryaml}', output_path=yaml_path)
+
+    # generate responses
+    print("generating response df for inputs dataset")
+    response_df = generate_response_pipeline_autorag(index_name, yaml_dir=yaml_path,
+                                                     project_dir=project_dir, eval_version=eval_version)
+
+    response_df.head()
 
 

@@ -1,5 +1,6 @@
 from langchain_pinecone import PineconeVectorStore
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from autorag.deploy import Runner
 from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.language_models import LanguageModelLike
@@ -10,7 +11,9 @@ from langchain_core.runnables import RunnableBranch
 import textwrap
 import json
 import pandas as pd
+import os
 from dotenv import load_dotenv, find_dotenv
+#from app.autorag_runner import Runner
 
 
 
@@ -49,6 +52,8 @@ def retrieve_inputs(file_path):
     return concatenated_content_list
 
 
+
+
 ## Executor methods
 def create_response_dataframe(index_name, input_list):
     """
@@ -70,6 +75,36 @@ def create_response_dataframe(index_name, input_list):
 
     return output_dataframe
 
+def create_response_dataframe_autorag(input_list, yaml_dir, project_dir):
+    """
+    Create a RAG runner for the pipeline loaded and create responses for the given input list.
+    """
+    # Fetch AutoRAG Runner
+    runner = Runner.from_yaml(yaml_dir, project_dir=project_dir)
+    corpus_df = pd.read_parquet(f'{project_dir}/data/corpus.parquet')
+    retrieved_metadata = []
+    retrieved_contents = []
+
+    for q in input_list:
+        q_response_ids = runner.run(q, result_column="retrieved_ids")
+
+        contents = corpus_df.loc[corpus_df['doc_id'].isin(q_response_ids), 'contents'].tolist()
+
+        metadata = corpus_df.loc[corpus_df['doc_id'].isin(q_response_ids), 'metadata'].apply(
+            lambda fm: {'int_id': fm['int_id'], 'kind': fm['kind'], 'title': fm['title']}).tolist()
+
+        retrieved_contents.append(contents)
+        retrieved_metadata.append(metadata)
+
+    output_dataframe = pd.DataFrame({'input': input_list, 'contents': retrieved_contents, 'metadata': retrieved_metadata})
+    output_dataframe.head()
+
+    return output_dataframe
+
+
+# Pipeline Methods
+
+# Non-AutoRAG response generation pipeline
 def generate_response_pipeline(index_name):
     """
     Generate responses for the given input dataset.
@@ -80,9 +115,22 @@ def generate_response_pipeline(index_name):
 
     # Create response dataframe
     response_dataframe = create_response_dataframe(index_name, input_list)
-
     response_dataframe.to_csv(f'util/{index_name}_rag-test-conversations.csv', index=False)
 
     return response_dataframe
+
+
+# AutoRAG response generation pipeline
+def generate_response_pipeline_autorag(index_name, yaml_dir='config/optimal.yaml', eval_version="",
+                                       project_dir=f'{os.getcwd()}'):
+    # Retrieve input dataset
+    input_list = retrieve_inputs(f'util/{index_name}_input_dataset.parquet')
+    response_df = create_response_dataframe_autorag(input_list, yaml_dir,project_dir)
+    response_df.to_parquet(f'eval/{index_name}{eval_version}_rag-test-conversations.parquet', index=False)
+    return response_df
+
+
+
+
 
 

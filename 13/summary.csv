@@ -1,4 +1,0 @@
-node_line_name,node_type,best_module_filename,best_module_name,best_module_params,best_execution_time
-retrieve_node_line,retrieval,12.parquet,hybrid_dbsf,"{'top_k': 10, 'weights': (0.7, 0.3), 'target_modules': ('bm25', 'vectordb'), 'target_module_params': ({'top_k': 10}, {'top_k': 10, 'embedding_model': 'openai', 'embedding_batch': 256})}",0.1966923560414994
-retrieve_node_line,passage_reranker,1.parquet,tart,{'top_k': 5},0.2018635187830244
-retrieve_node_line,passage_filter,3.parquet,threshold_cutoff,{'threshold': 0.85},6.278072084699358e-05

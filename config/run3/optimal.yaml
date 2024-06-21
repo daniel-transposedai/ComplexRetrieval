@@ -1,0 +1,27 @@
+node_lines:
+- node_line_name: retrieve_node_line
+  nodes:
+  - modules:
+    - module_type: hybrid_cc
+      target_module_params:
+      - top_k: 3
+      - embedding_batch: 256
+        embedding_model: openai
+        top_k: 3
+      target_modules:
+      - bm25
+      - vectordb
+      top_k: 3
+      weights:
+      - 0.7
+      - 0.3
+    node_type: retrieval
+    strategy:
+      metrics:
+      - retrieval_f1
+      - retrieval_recall
+      - retrieval_precision
+      - retrieval_ndcg
+      - retrieval_map
+      - retrieval_mrr
+      speed_threshold: 10
