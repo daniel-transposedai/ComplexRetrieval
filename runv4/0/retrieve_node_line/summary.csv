@@ -1,4 +1,0 @@
-node_type,best_module_filename,best_module_name,best_module_params,best_execution_time
-retrieval,2.parquet,hybrid_rrf,"{'top_k': 3, 'rrf_k': 10, 'target_modules': ('bm25', 'vectordb'), 'target_module_params': ({'top_k': 3}, {'top_k': 3, 'embedding_model': 'openai', 'embedding_batch': 256})}",0.2347635907946892
-passage_reranker,6.parquet,flag_embedding_reranker,"{'top_k': 2, 'batch': 16}",0.1681761786622821
-passage_filter,3.parquet,threshold_cutoff,{'threshold': 0.85},4.323023670124558e-05
