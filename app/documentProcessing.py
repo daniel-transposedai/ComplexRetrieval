@@ -68,13 +68,13 @@ def preprocessText(text):
     return texts, documents
 
 # Function to apply Hierarchical Dirichlet Process (HDP) Topic Modeling
-def applyHDPTopicModelSegmentation(texts, original_sentences):
+def applyHDPTopicModelSegmentation(texts, original_sentences, min_segment_size):
     # Create dictionary and corpus
     dictionary = corpora.Dictionary(texts)
     corpus = [dictionary.doc2bow(text) for text in texts]
 
     # Apply HDP and get dominant topics
-    topic_boundaries = getDominantTopic_limited(corpus, dictionary)
+    topic_boundaries = getDominantTopic_limited(corpus, dictionary, min_segment_size)
 
     # Segment the text based on topic boundaries
     segmented_texts = []
@@ -236,11 +236,6 @@ def process_content_parallel(content, kind, title, int_id,  index_name):
     return content_docs
 
 
-def process_content_parallel_unpack(args):
-    return process_content_parallel(*args)
-
-def process_content_parallel_unpack_autorag(args):
-    return process_content_parallel_autorag(*args)
 
 
 # Parallel intro step (no AutoRAG)
@@ -269,7 +264,7 @@ def process_dataset_with_HDP_parallel(data_dict, index_name):
 
 
 # Strategy 2 - Holistic embedding with HDP chunking
-def process_content_parallel_autorag(content, kind, title, int_id,):
+def process_content_parallel_autorag(content, kind, title, int_id, min_chunk_segments):
     print("entered a single loop of this function")
     #multiprocessing.log_to_stderr("entered process content")
     try:
@@ -279,7 +274,7 @@ def process_content_parallel_autorag(content, kind, title, int_id,):
         # preprocess the text of the content entry
         texts, original_sentences = preprocessText(content)
         # run HDP and topic segment the content text
-        segmented_texts = applyHDPTopicModelSegmentation(texts, original_sentences)
+        segmented_texts = applyHDPTopicModelSegmentation(texts, original_sentences, min_chunk_segments)
 
         print("Formatting partitioned text into documents")
         # create the doc objects
@@ -295,10 +290,17 @@ def process_content_parallel_autorag(content, kind, title, int_id,):
         raise e
     return content_docs
 
-def process_dataset_with_HDP_parallel_autorag(data_dict, index_name):
+
+def process_content_parallel_unpack(args):
+    return process_content_parallel(*args)
+
+def process_content_parallel_unpack_autorag(args):
+    return process_content_parallel_autorag(*args)
+
+def process_dataset_with_HDP_parallel_autorag(data_dict, min_chunk_segments):
 
     # Preparing data list for executor
-    content_list = [(data_dict['content'][i], data_dict['kind'][i], data_dict['title'][i], data_dict['int_id'][i], index_name) for i in range(len(data_dict['content']))]
+    content_list = [(data_dict['content'][i], data_dict['kind'][i], data_dict['title'][i], data_dict['int_id'][i], min_chunk_segments) for i in range(len(data_dict['content']))]
 
     results = []
     # Initialize tqdm progress bar
@@ -327,11 +329,11 @@ def process_dataset_pipeline(index_name):
     return result_docs
 
 
-# End to End execution - Parallel
-def process_dataset_pipeline_parallel_autorag(index_name):
+# End to End execution - Parallel (for AutoRAG)
+def process_dataset_pipeline_parallel_autorag(index_name, min_chunk_segments=3):
     print("Retrieving dataset")
     data_dict = ingest_dataset(f'util/{index_name}_dataset.parquet')
-    result_docs = process_dataset_with_HDP_parallel_autorag(data_dict, index_name)
+    result_docs = process_dataset_with_HDP_parallel_autorag(data_dict, min_chunk_segments)
     return result_docs
 
 
