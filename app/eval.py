@@ -177,7 +177,6 @@ def build_synthetic_template_autorag(index_name, eval_version="", use_existing=T
 
         return pd.read_parquet(f'util/{index_name}{eval_version}_template_eval_autorag.parquet')
     else:
-
         print("building autorag template")
         # check if autorag configured dataset exists
         if not os.path.isfile(f'util/{index_name}{eval_version}_dataset_autorag.parquet'):
@@ -186,13 +185,13 @@ def build_synthetic_template_autorag(index_name, eval_version="", use_existing=T
         df = pd.read_parquet(f"util/{index_name}{eval_version}_dataset_autorag.parquet")
 
 
-        # use iloc to slice shorter to speed up process (and make my wallet not hurt as much)
+        """# use iloc to slice shorter to speed up process (and make my wallet not hurt as much)
         tenth_length = len(df) // 10
         first_tenth_df = df.iloc[:tenth_length]
         first_tenth_df.to_parquet(f"util/{index_name}{eval_version}_eval_dataset_autorag.parquet")
-
+"""
         documents = []
-        for index, row in first_tenth_df.iterrows():
+        for index, row in df.iterrows():
             # Extract the content and metadata values
             content = row['contents']
             metadata = {
@@ -211,9 +210,7 @@ def build_synthetic_template_autorag(index_name, eval_version="", use_existing=T
         embeddings = OpenAIEmbeddings()
 
         distributions = {  # uniform distribution
-            simple: 0.25,
-            reasoning: 0.45,
-            multi_context: 0.30,
+            multi_context: 1.0,
         }
 
         qa_df = generate_qa_autorag(distributions=distributions, generator_llm=generator_llm,
@@ -250,7 +247,8 @@ def build_child_to_master_synthetic_template_autorag(index_name, eval_version=""
 
     # Create the list of child from all rows of the selected int_ids
     child_dataframes = [corpus_df[corpus_df['int_id'] == int_id] for int_id in selected_int_ids]
-
+    total_corpus_df = pd.concat(child_dataframes, ignore_index=True)
+    total_corpus_df.to_parquet(f'util/{index_name}{eval_version}_dataset_total_autorag.parquet')
     print("building autorag templates for child dfs")
     qa_dfs = []
     for i, child_df in enumerate(child_dataframes):
@@ -272,15 +270,15 @@ def build_child_to_master_synthetic_template_autorag(index_name, eval_version=""
             documents.append(document)
 
         generator_llm = ChatOpenAI(model="gpt-4o")
-        critic_llm = ChatOpenAI(model="gpt-4o")
+        critic_llm = ChatOpenAI(model="gpt-4")
         embeddings = OpenAIEmbeddings()
 
         distributions = {  # leaning towards multicontext
-            multi_context: 1.0
+            simple: 0.6
         }
 
         qa_df = generate_qa_autorag(distributions=distributions, generator_llm=generator_llm,
-                                    critic_llm=critic_llm, embedding_model=embeddings, test_size=11, # we want 10 but it often ends with 2 less
+                                    critic_llm=critic_llm, embedding_model=embeddings, test_size=12, # we want 10 but it often ends with 2 less
                                     langchain_docs=documents)
 
         os.chdir("/Users/dcampbel/Nextcloud/Repositories/masterclassRetrieval")
@@ -294,13 +292,16 @@ def build_child_to_master_synthetic_template_autorag(index_name, eval_version=""
     total_qa_df.to_parquet(f'util/{index_name}{eval_version}_child_qa_total_autorag.parquet')
 
     total_qa_path = f'util/{index_name}{eval_version}_child_qa_total_autorag.parquet'
+    total_corpus_path = f'util/{index_name}{eval_version}_dataset_autorag.parquet'
     total_qa_df.head(5)
-    return total_qa_path
+    return total_qa_path, total_corpus_path
 
-def autorag_pipeline(index_name, project_dir, eval_version=""):
-    build_synthetic_template_autorag(index_name, eval_version=eval_version, use_existing=True)
+def autorag_pipeline(index_name, project_dir = os.getcwd(), eval_version="", min_chunk_segments=3):
+    build_synthetic_template_autorag(index_name, eval_version=eval_version, min_chunk_segments= min_chunk_segments, use_existing=True)
     print("Now entering autorag pipeline...")
-    try_autorag(index_name=index_name, project_dir=project_dir, eval_version=eval_version)
+    corpus_path = f'util/{index_name}{eval_version}_dataset_autorag.parquet'
+    qa_path = f'./util/{index_name}{eval_version}_template_eval_autorag.parquet'
+    try_autorag(index_name=index_name, project_dir=project_dir, eval_version=eval_version, qa_data_path=qa_path, corpus_data_path=corpus_path)
 
 def child_to_master_autorag_pipeline(index_name, eval_version="", use_original_corpus = False,
                                      project_dir=os.getcwd(), min_chunk_segments=3):
@@ -318,23 +319,22 @@ def child_to_master_autorag_pipeline(index_name, eval_version="", use_original_c
         print("Existing files found, entering autorag evaluation")
         try_autorag(index_name="live", project_dir=project_dir, qa_data_path=total_qa_path, corpus_data_path=corpus_path, eval_version=eval_version)
     else:
-        total_qa_path = build_child_to_master_synthetic_template_autorag(index_name, eval_version,
+        total_qa_path, total_corpus_path = build_child_to_master_synthetic_template_autorag(index_name, eval_version,
                                                     use_existing=True, min_chunk_segments=min_chunk_segments)
 
         print("Now entering autorag pipeline...")
-
-        try_autorag(index_name="live",project_dir=project_dir,  qa_data_path=total_qa_path, corpus_data_path=corpus_path, eval_version=eval_version)
+        try_autorag(index_name="live",project_dir=project_dir,  qa_data_path=total_qa_path, corpus_data_path=total_corpus_path, eval_version=eval_version)
 
 
 if __name__ == "__main__":
     print(os.getcwd())
-    # switch here for different pipelines
-    runproject_name ="runv3"
+    # holder values for testing
+    runproject_name ="runv8"
     trialnum_foryaml = "0"
     index_name = "live"
-    eval_version = "v3_5chunk"
-    min_chunk_segments = 5
-    yaml_path = f'{os.getcwd()}/config/{runproject_name}/optimal.yaml'
+    eval_version = "v5_minseg7_nofilterk3_broadcorpus"
+    min_chunk_segments = 7
+    yaml_path = f'config/{runproject_name}/optimal.yaml'
     project_dir = f'{os.getcwd()}/{runproject_name}'
 
 
@@ -343,7 +343,7 @@ if __name__ == "__main__":
     child_to_master_autorag_pipeline(index_name, project_dir=f'{os.getcwd()}/{runproject_name}',
                                      eval_version=eval_version, min_chunk_segments=min_chunk_segments, use_original_corpus=False)
 
-    # autorag_pipeline("live", project_dir=f'{os.getcwd()}/{runproject_name}', eval_version="v1")
+    #autorag_pipeline("live", project_dir=f'{os.getcwd()}/{runproject_name}', eval_version=eval_version, min_chunk_segments=min_chunk_segments)
 
 
     # retrieve the best config
@@ -352,16 +352,11 @@ if __name__ == "__main__":
         os.mkdir(f'{os.getcwd()}/config/{runproject_name}')
 
 
+    # TODO: Bug report, this feature cannot be called via python on Mac. Must be done manually.
     # using this method over the package call as the package call causes erroneous parse errors
-    command = f"autorag extract_best_config --trial_path {os.getcwd()}/{runproject_name}/{trialnum_foryaml} --output_path {yaml_path}"
-    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    #command = f"autorag extract_best_config --trial_path {runproject_name}/{trialnum_foryaml} --output_path {yaml_path}"
+    #process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
-    # generate responses
-    print("generating response df for inputs dataset")
-    response_df = generate_response_pipeline_autorag(index_name, yaml_dir=yaml_path,
-                                                     project_dir=project_dir, eval_version=eval_version)
-
-    response_df.head()
 
 

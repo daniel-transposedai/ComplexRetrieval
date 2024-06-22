@@ -4,12 +4,13 @@ WORKDIR /code
 
 COPY ./app/ ./app
 
-COPY ./pyproject.toml ./README.md ./requirements.txt ./
+COPY ./LICENSE.md ./full.yaml ./README.md ./requirements_m3.txt ./
 
-COPY ./utils ./utils
+COPY ./util ./util
 
-RUN pip install -r requirements.txt
+RUN pip install -r requirements_m3.txt
 
-EXPOSE 8080
+# Exposing for dashboard webserver, if running via docker exec.
+EXPOSE 61009
 
-CMD streamlit run code/app/app.py
+CMD python -m app.eval

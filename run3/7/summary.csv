@@ -1,0 +1,4 @@
+node_line_name,node_type,best_module_filename,best_module_name,best_module_params,best_execution_time
+retrieve_node_line,retrieval,6.parquet,hybrid_rrf,"{'top_k': 10, 'rrf_k': 1, 'target_modules': ('bm25', 'vectordb'), 'target_module_params': ({'top_k': 3}, {'top_k': 3, 'embedding_model': 'openai', 'embedding_batch': 256})}",0.2399927490162399
+retrieve_node_line,passage_reranker,1.parquet,tart,{'top_k': 2},0.7291135832948504
+retrieve_node_line,passage_filter,3.parquet,threshold_cutoff,{'threshold': 0.85},1.6887232942401238e-05
